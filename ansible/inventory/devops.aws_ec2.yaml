@@ -1,0 +1,23 @@
+---
+plugin: amazon.aws.aws_ec2
+
+regions:
+  - ap-southeast-1
+
+filters:
+  tag:Project: devops-bootcamp
+  tag:Role:
+    - web
+    - monitoring
+  instance-state-name: running
+
+hostnames:
+  - tag:Name
+
+keyed_groups:
+  - key: ec2_tags.Role
+    prefix: ""
+    separator: ""
+
+compose:
+  ansible_aws_ssm_instance_id: instance_id

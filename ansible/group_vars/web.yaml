@@ -1,0 +1,4 @@
+---
+ship_dir: /opt/ship
+ecr_repository: 507861383583.dkr.ecr.ap-southeast-1.amazonaws.com/devops-bootcamp/final-project-syedazam
+image_tag: latest

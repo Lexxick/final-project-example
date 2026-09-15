@@ -1,0 +1,6 @@
+---
+monitoring_dir: /opt/monitoring
+monitoring_domain: example.com
+web_server_private_ip: 10.0.0.5
+tunnel_token_parameter: /devops-bootcamp/tunnel-token
+grafana_admin_password_parameter: /devops-bootcamp/grafana-admin-password
