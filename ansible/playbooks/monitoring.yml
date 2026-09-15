@@ -1,0 +1,54 @@
+---
+- name: Deploy Prometheus, Grafana and the Cloudflare tunnel
+  hosts: monitoring
+  become: true
+  vars:
+    tunnel_token: "{{ lookup('amazon.aws.aws_ssm', tunnel_token_parameter, region=ansible_aws_ssm_region, decrypt=true) }}"
+    grafana_admin_password: "{{ lookup('amazon.aws.aws_ssm', grafana_admin_password_parameter, region=ansible_aws_ssm_region, decrypt=true) }}"
+  tasks:
+    - name: Create the monitoring directory
+      ansible.builtin.file:
+        path: "{{ monitoring_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Copy the Grafana provisioning tree
+      ansible.builtin.copy:
+        src: grafana/provisioning/
+        dest: "{{ monitoring_dir }}/grafana/provisioning/"
+        owner: root
+        group: root
+        mode: "0644"
+        directory_mode: "0755"
+
+    - name: Render the Prometheus configuration
+      ansible.builtin.template:
+        src: prometheus.yaml.j2
+        dest: "{{ monitoring_dir }}/prometheus.yaml"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Render the secrets file
+      ansible.builtin.template:
+        src: monitoring.env.j2
+        dest: "{{ monitoring_dir }}/.env"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Render the Compose file
+      ansible.builtin.template:
+        src: monitoring-compose.yaml.j2
+        dest: "{{ monitoring_dir }}/compose.yaml"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Bring the monitoring stack up
+      community.docker.docker_compose_v2:
+        project_src: "{{ monitoring_dir }}"
+        state: present
