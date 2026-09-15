@@ -71,9 +71,9 @@ State lives in S3 (`devops-bootcamp-terraform-syedazam-507861383583`) with the n
 | `security.tf` | `security-group` module: `devops-public-sg` (80 from anywhere, 9100 from the monitoring server) and `devops-private-sg` (no inbound) |
 | `iam.tf` | `iam` module: one role per server, the GitHub OIDC provider and the GitHub Actions role |
 | `registry.tf` | `aws_ecr_repository` data source; the registry itself is owned by `bootstrap/` |
-| `bootstrap/` | Second, tiny configuration (own state key) with the `ecr` module: scan on push, keep the last 10 images. Applied once and left in place so images survive `terraform destroy` of the stack |
+| `bootstrap/` | Second, tiny configuration (own state key): the `ecr` module (scan on push, keep the last 10 images) and the web server's Elastic IP. Applied once and left in place so images and the DNS record survive `terraform destroy` of the stack |
 | `storage.tf` | `s3-bucket` module: transfer bucket for the Ansible SSM connection, objects expire after a day |
-| `ec2.tf`, `templates/controller.sh.tftpl` | `ec2-instance` module ×3 and the controller bootstrap script |
+| `ec2.tf`, `templates/` | `ec2-instance` module ×3, the association of the bootstrap Elastic IP with the web server, `node.sh` (waits for the instance profile, restarts the SSM agent) and the controller bootstrap script |
 | `outputs.tf` | Public IP, instance IDs, ECR URL, CI role ARN, the Session Manager command |
 
 ### IAM
@@ -104,7 +104,10 @@ security groups never need to change.
 Session Manager plugin, clones this repository to `/home/ubuntu/final-project-example`, creates a
 virtualenv in `/opt/ansible` from `ansible/requirements.txt` (ansible-core 2.21, boto3) and installs
 the Galaxy dependencies from `ansible/requirements.yml` (`geerlingguy.docker`, `amazon.aws`,
-`community.docker`), then runs `site.yml`. Nothing else is ever installed by hand: after
+`community.docker`), then runs `site.yml`. All three instances first wait for their instance
+profile credentials to appear in the metadata service and restart the SSM agent (`node.sh`): an
+agent that starts before the profile has propagated backs off for 30 minutes. Nothing else is ever
+installed by hand: after
 `terraform apply` the fleet converges on its own, and `/var/log/cloud-init-output.log` on the
 controller holds the play output.
 
@@ -193,11 +196,12 @@ repository IDs. Put it in `terraform/terraform.tfvars` as `github_oidc_subject`:
 gh api repos/Lexxick/final-project-example --jq '"\(.owner.login)@\(.owner.id)/\(.name)@\(.id)"'
 ```
 
-### 2. State bucket and registry
+### 2. State bucket, registry and address
 
 The state bucket is the one thing created by hand – a configuration cannot store its state in a
-bucket it has not created yet. The registry is a separate Terraform configuration with its own state
-key, applied once and left in place across `terraform destroy` of the main stack.
+bucket it has not created yet. The registry and the web server's Elastic IP are a separate Terraform
+configuration with its own state key, applied once and left in place across `terraform destroy` of
+the main stack.
 
 ```bash
 aws s3api create-bucket --bucket devops-bootcamp-terraform-syedazam-507861383583 \
@@ -209,7 +213,7 @@ aws s3api put-public-access-block --bucket devops-bootcamp-terraform-syedazam-50
 
 cd terraform/bootstrap
 terraform init
-terraform apply          # the ECR repository, its lifecycle policy and repository policy
+terraform apply          # the ECR repository, its policies, and the Elastic IP
 cd ../..
 ```
 
@@ -223,11 +227,13 @@ docker build -t "$image" app/          # from the repository root
 docker push "$image"
 ```
 
-### 3. Cloudflare tunnel
+### 3. Cloudflare
 
-1. **Zero Trust → Networks → Tunnels → Create a tunnel** (Cloudflared): name it `devops-bootcamp`,
+1. **DNS**: add an `A` record `web` → the `web_public_ip` output of `terraform/bootstrap`, proxy
+   status *Proxied*. **SSL/TLS → Overview**: set the encryption mode to *Flexible*.
+2. **Zero Trust → Networks → Tunnels → Create a tunnel** (Cloudflared): name it `devops-bootcamp`,
    copy the token from the install command (the long string after `--token`).
-2. In the tunnel's **Public Hostname** tab add `monitoring.example.com` → service type **HTTP**,
+3. In the tunnel's **Public Hostname** tab add `monitoring.example.com` → service type **HTTP**,
    URL `grafana:3000`.
 
 ### 4. Parameter Store
@@ -263,23 +269,18 @@ sudo tail -f /var/log/cloud-init-output.log
 The OIDC provider and the CI role are part of this stack, so after a full teardown the first plan
 on a pull request fails at *Configure AWS credentials* until the stack is applied again.
 
-### 6. DNS
-
-**DNS**: add an `A` record `web` → `web_public_ip`, proxy status *Proxied*. **SSL/TLS →
-Overview**: set the encryption mode to *Flexible*.
-
-### 7. Repository variable
+### 6. Repository variable
 
 **Settings → Secrets and variables → Actions → Variables**: add `AWS_ROLE_ARN` with the value of
 `github_actions_role_arn`. Until it is set, the build workflow skips itself.
 
-### 8. Shipping a change
+### 7. Shipping a change
 
 Push to `app/` (or **Actions → Build and deploy → Run workflow**). The build job pushes
 `sha-<short>` and `latest`; the deploy job runs `playbooks/web.yml` on the controller and only the
 `ship` service is recreated.
 
-### 9. Running the playbooks by hand
+### 8. Running the playbooks by hand
 
 ```bash
 aws ssm start-session --target "$(cd terraform && terraform output -raw controller_instance_id)"
@@ -289,14 +290,14 @@ ansible-inventory --graph          # expect @web and @monitoring
 ansible-playbook site.yml          # changed=0 everywhere after the boot-time run
 ```
 
-### 10. Verify
+### 9. Verify
 
 - <https://web.doubleadigital.my> shows the ship; `curl -I http://<web_public_ip>` returns `200`.
 - <https://monitoring.doubleadigital.my> shows the Grafana login; the *Web Server* dashboard has data.
 - On the monitoring server, `curl -s localhost:9090/api/v1/targets` lists `web-server` as `up`.
 - Open a pull request that edits any `.tf` file: the plan appears as a comment.
 
-### 11. Teardown
+### 10. Teardown
 
 ```bash
 cd terraform && terraform destroy
@@ -306,8 +307,8 @@ aws s3api delete-bucket --bucket devops-bootcamp-terraform-syedazam-507861383583
 ```
 
 Then delete the tunnel and the DNS records in Cloudflare. The registry is left in place on purpose
-(a few cents a month at most); `terraform -chdir=terraform/bootstrap destroy` removes it and its
-images too.
+(a few cents a month at most) and so is the Elastic IP (about $3.65 a month while idle);
+`terraform -chdir=terraform/bootstrap destroy` removes both, images included.
 
 ## Screenshots
 

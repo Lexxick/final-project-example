@@ -1,6 +1,6 @@
 output "web_public_ip" {
   description = "Elastic IP of the web server"
-  value       = module.web_server.public_ip
+  value       = data.aws_eip.web.public_ip
 }
 
 output "web_instance_id" {

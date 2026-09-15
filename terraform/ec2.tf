@@ -13,14 +13,28 @@ module "web_server" {
 
   subnet_id              = module.vpc.public_subnets[0]
   private_ip             = var.web_private_ip
-  create_eip             = true
   create_security_group  = false
   vpc_security_group_ids = [module.public_sg.id]
   iam_instance_profile   = module.web_role.instance_profile_name
 
+  user_data                   = file("${path.module}/templates/node.sh")
+  user_data_replace_on_change = true
+
   tags = {
     Role = "web"
   }
+}
+
+# The address is owned by terraform/bootstrap so the DNS record survives terraform destroy.
+data "aws_eip" "web" {
+  tags = {
+    Name = "devops-web-eip"
+  }
+}
+
+resource "aws_eip_association" "web" {
+  allocation_id = data.aws_eip.web.id
+  instance_id   = module.web_server.id
 }
 
 module "controller" {
@@ -62,6 +76,9 @@ module "monitoring_server" {
   create_security_group  = false
   vpc_security_group_ids = [module.private_sg.id]
   iam_instance_profile   = module.monitoring_role.instance_profile_name
+
+  user_data                   = file("${path.module}/templates/node.sh")
+  user_data_replace_on_change = true
 
   tags = {
     Role = "monitoring"

@@ -24,8 +24,8 @@ shell, carries the Ansible connection and receives the deploy trigger from CI.
 ## How it works
 
 - **Terraform** builds everything from `terraform-aws-modules` registry modules, state in S3.
-  `terraform/bootstrap/` is a second, tiny configuration that owns the ECR repository so images
-  outlive `terraform destroy`.
+  `terraform/bootstrap/` is a second, tiny configuration that owns the ECR repository and the web
+  server's Elastic IP, so images and the DNS record outlive `terraform destroy`.
 - **The controller** installs Ansible from its user data, clones this repository and runs
   `site.yml` – one `terraform apply` brings the whole stack up.
 - **Ansible** finds the hosts through the `aws_ec2` inventory (grouped by the `Role` tag) and talks
@@ -42,7 +42,7 @@ shell, carries the Ansible connection and receives the deploy trigger from CI.
 app/                      Ship microsite (Vite + Three.js), tests, Dockerfile (node build → nginx)
 terraform/                VPC, security groups, IAM, EC2 (ec2.tf + templates/controller.sh.tftpl),
                           transfer bucket; registry.tf reads the ECR repository owned by bootstrap/
-terraform/bootstrap/      ECR repository, own state key, applied once
+terraform/bootstrap/      ECR repository and the web Elastic IP, own state key, applied once
 ansible/                  ansible.cfg, requirements, inventory/ (aws_ec2 + group_vars), site.yml,
                           playbooks/ (docker, web, deploy, monitoring + templates and Grafana files)
 .github/workflows/        terraform.yml (plan on PR), build-and-deploy.yml, pages.yml
@@ -64,7 +64,7 @@ are done once; step 6 is the everyday `apply`.
    aws s3api put-public-access-block --bucket devops-bootcamp-terraform-syedazam-507861383583 \
      --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
    ```
-3. Registry:
+3. Registry and Elastic IP:
    ```bash
    terraform -chdir=terraform/bootstrap init
    terraform -chdir=terraform/bootstrap apply
@@ -76,12 +76,15 @@ are done once; step 6 is the everyday `apply`.
    docker build -t "$image" app/
    docker push "$image"
    ```
-5. Cloudflare tunnel (Zero Trust, public hostname `monitoring.<domain>` → `grafana:3000`) and the
-   two secrets it needs at boot:
+5. Cloudflare: `A` record `web` → the bootstrap `web_public_ip` output (proxied, SSL *Flexible*), a
+   tunnel (Zero Trust, public hostname `monitoring.<domain>` → `grafana:3000`), and the two secrets
+   read at boot:
    ```bash
    aws ssm put-parameter --name /devops-bootcamp/tunnel-token --type SecureString --value '<tunnel token>'
    aws ssm put-parameter --name /devops-bootcamp/grafana-admin-password --type SecureString --value '<password>'
    ```
+   Also add the `AWS_ROLE_ARN` repository variable, `arn:aws:iam::507861383583:role/devops-github-actions-role`
+   (the name is fixed, so once).
 6. The stack – the controller then runs `site.yml` on its own, about ten minutes:
    ```bash
    terraform -chdir=terraform init
@@ -89,14 +92,11 @@ are done once; step 6 is the everyday `apply`.
    aws ssm start-session --target "$(terraform -chdir=terraform output -raw controller_instance_id)"
    sudo tail -f /var/log/cloud-init-output.log        # ends with the PLAY RECAP
    ```
-7. From the outputs: Cloudflare `A` record `web` → `web_public_ip` (proxied, SSL *Flexible*) and the
-   `AWS_ROLE_ARN` repository variable → `github_actions_role_arn`.
-
 Verify: `https://web.<domain>` shows the ship, `https://monitoring.<domain>` shows the Grafana login,
 `curl -s localhost:9090/api/v1/targets` on the monitoring server lists `web-server` as `up`.
 
 Teardown is `terraform -chdir=terraform destroy`; steps 2–5 stay, so the next `apply` comes back
-with the last image, the same tunnel and the same secrets. Note that the OIDC provider and the CI
+with the last image, the same address, tunnel and secrets – nothing to redo by hand. Note that the OIDC provider and the CI
 role are part of the stack: the first pull-request plan after a teardown fails at *Configure AWS
 credentials* until the stack is applied again.
 
