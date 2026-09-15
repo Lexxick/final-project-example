@@ -1,0 +1,106 @@
+name: Terraform plan
+
+on:
+  pull_request:
+    paths:
+      - terraform/**
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+env:
+  AWS_REGION: ap-southeast-1
+
+defaults:
+  run:
+    working-directory: terraform
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.16.1"
+
+      - name: Terraform fmt
+        id: fmt
+        run: terraform fmt -check -recursive
+        continue-on-error: true
+
+      - name: Terraform init
+        run: terraform init -input=false
+
+      - name: Terraform validate
+        id: validate
+        run: terraform validate -no-color
+
+      - name: Terraform plan
+        id: plan
+        run: terraform plan -input=false -no-color -detailed-exitcode
+        continue-on-error: true
+
+      - name: Post plan to the pull request
+        uses: actions/github-script@v9
+        env:
+          PLAN: ${{ steps.plan.outputs.stdout }}
+        with:
+          script: |
+            const marker = '<!-- terraform-plan -->';
+            const plan = process.env.PLAN.length > 60000
+              ? process.env.PLAN.slice(0, 60000) + '\n\n... output truncated ...'
+              : process.env.PLAN;
+            const body = `${marker}
+            ### Terraform
+
+            | Step | Outcome |
+            | --- | --- |
+            | fmt | \`${{ steps.fmt.outcome }}\` |
+            | validate | \`${{ steps.validate.outcome }}\` |
+            | plan | \`${{ steps.plan.outcome }}\` (exit code ${{ steps.plan.outputs.exitcode }}) |
+
+            <details><summary>Show plan</summary>
+
+            \`\`\`
+            ${plan}
+            \`\`\`
+
+            </details>`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((c) => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Fail on formatting or plan errors
+        if: steps.fmt.outcome == 'failure' || steps.plan.outputs.exitcode == '1'
+        run: exit 1
