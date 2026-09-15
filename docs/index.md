@@ -82,7 +82,7 @@ State lives in S3 (`devops-bootcamp-terraform-syedazam-507861383583`) with the n
 | `devops-web-role` | EC2 | `AmazonSSMManagedInstanceCore`; pull from the one ECR repository |
 | `devops-controller-role` | EC2 | `AmazonSSMManagedInstanceCore`; `ssm:StartSession` on instances tagged `Project=devops-bootcamp`; `ec2:DescribeInstances` for the dynamic inventory; read `/devops-bootcamp/*` parameters; read/write the transfer bucket |
 | `devops-monitoring-role` | EC2 | `AmazonSSMManagedInstanceCore` only |
-| `devops-github-actions-role` | GitHub OIDC, `repo:Lexxick/final-project-example:*` | `ReadOnlyAccess` for `terraform plan`; push to the ECR repository; `ssm:SendCommand` on instances tagged `Role=controller`; write the state lock file |
+| `devops-github-actions-role` | GitHub OIDC, `repo:Lexxick@234321683/final-project-example@1370915813:*` | `ReadOnlyAccess` for `terraform plan`; push to the ECR repository; `ssm:SendCommand` on instances tagged `Role=controller`; write the state lock file |
 
 Every policy is scoped to the resource it is for; the only `*` resources are actions that do not
 support resource-level permissions (`ecr:GetAuthorizationToken`, `ec2:DescribeInstances`,
@@ -180,6 +180,13 @@ the same code path is used whether a deploy comes from CI or from a shell on the
 Push this repository to `github.com/Lexxick/final-project-example` (public). In **Settings →
 Pages** set *Source* to **GitHub Actions**. The controller clones the repository at boot, so this
 must exist before `terraform apply`.
+
+Repositories created after July 2026 present an immutable OIDC subject that carries the owner and
+repository IDs. Put it in `terraform/terraform.tfvars` as `github_oidc_subject`:
+
+```bash
+gh api repos/Lexxick/final-project-example --jq '"\(.owner.login)@\(.owner.id)/\(.name)@\(.id)"'
+```
 
 ### 2. State bucket
 

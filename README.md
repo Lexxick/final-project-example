@@ -34,7 +34,7 @@ The full runbook is in [docs/index.md](docs/index.md). In short:
 | Value | Where |
 | --- | --- |
 | `syedazam` (state bucket, transfer bucket, ECR path, `Owner` tag, callsign) | `terraform/terraform.tfvars`, `terraform/versions.tf`, `ansible/inventory/group_vars/all.yaml`, `ansible/inventory/group_vars/web.yaml`, `.github/workflows/build-and-deploy.yml` |
-| `Lexxick/final-project-example` (OIDC trust, controller clone URL) | `terraform/terraform.tfvars` |
+| `Lexxick/final-project-example` (controller clone URL) and `Lexxick@234321683/final-project-example@1370915813` (OIDC trust) | `terraform/terraform.tfvars` |
 | `example.com` | `ansible/inventory/group_vars/monitoring.yaml`, `docs/index.md`, this file |
 | Account ID `507861383583` | `ansible/inventory/group_vars/web.yaml` |
 

@@ -22,7 +22,12 @@ variable "owner" {
 }
 
 variable "github_repository" {
-  description = "GitHub repository (owner/name) allowed to assume the CI role via OIDC"
+  description = "GitHub repository (owner/name) cloned by the controller"
+  type        = string
+}
+
+variable "github_oidc_subject" {
+  description = "Repository part of the GitHub OIDC subject claim (owner@id/name@id for repositories created after July 2026)"
   type        = string
 }
 

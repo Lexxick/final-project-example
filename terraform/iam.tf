@@ -125,7 +125,7 @@ module "github_actions_role" {
   use_name_prefix = false
 
   enable_github_oidc     = true
-  oidc_wildcard_subjects = ["${var.github_repository}:*"]
+  oidc_wildcard_subjects = ["${var.github_oidc_subject}:*"]
 
   policies = {
     read_only = "arn:aws:iam::aws:policy/ReadOnlyAccess"
