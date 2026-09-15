@@ -5,7 +5,7 @@ variable "region" {
 }
 
 variable "availability_zone" {
-  description = "Single availability zone used by both subnets"
+  description = "Single availability zone used by both subnets (must be in var.region)"
   type        = string
   default     = "ap-southeast-1a"
 }
