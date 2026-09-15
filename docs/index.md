@@ -6,8 +6,8 @@ layout: default
 
 | | |
 | --- | --- |
-| Application | <https://web.example.com> |
-| Monitoring (Grafana) | <https://monitoring.example.com> |
+| Application | <https://web.doubleadigital.my> |
+| Monitoring (Grafana) | <https://monitoring.doubleadigital.my> |
 | Repository | <https://github.com/Lexxick/final-project-example> |
 
 ## Architecture
@@ -264,8 +264,8 @@ changes for it. Run it a second time to see `changed=0` everywhere.
 
 ### 10. Verify
 
-- <https://web.example.com> shows the ship; `curl -I http://<web_public_ip>` returns `200`.
-- <https://monitoring.example.com> shows the Grafana login; the *Web Server* dashboard has data.
+- <https://web.doubleadigital.my> shows the ship; `curl -I http://<web_public_ip>` returns `200`.
+- <https://monitoring.doubleadigital.my> shows the Grafana login; the *Web Server* dashboard has data.
 - On the monitoring server, `curl -s localhost:9090/api/v1/targets` lists `web-server` as `up`.
 - Open a pull request that edits any `.tf` file: the plan appears as a comment.
 
@@ -282,7 +282,7 @@ Then delete the tunnel and the DNS records in Cloudflare.
 
 ## Screenshots
 
-**The application** – `web.example.com` behind the proxied A record.
+**The application** – `web.doubleadigital.my` behind the proxied A record.
 
 ![The ship](images/ship.png)
 
