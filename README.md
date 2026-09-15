@@ -21,11 +21,20 @@ Three Ubuntu 24.04 `t3.micro` instances in one VPC (`10.0.0.0/24`, `ap-southeast
 Only the web server has a public address. Nothing listens on port 22: Session Manager gives the
 shell, carries the Ansible connection and receives the deploy trigger from CI.
 
+## Two layers
+
+| Layer | Owns | Lifecycle |
+| --- | --- | --- |
+| **Foundation** | state bucket, ECR repository and its images, the web Elastic IP (`terraform/bootstrap/`), Cloudflare DNS and tunnel, the two Parameter Store secrets, the `AWS_ROLE_ARN` variable | created once, never destroyed with the stack |
+| **Stack** | VPC, subnets, NAT, security groups, IAM roles and the OIDC provider, the three servers (`terraform/`) | `apply` and `destroy` at will; converges itself at boot |
+
+Everything external points at the foundation – DNS at the Elastic IP, CI at the repository name –
+so rebuilding the stack changes nothing outside AWS.
+
 ## How it works
 
-- **Terraform** builds everything from `terraform-aws-modules` registry modules, state in S3.
-  `terraform/bootstrap/` is a second, tiny configuration that owns the ECR repository and the web
-  server's Elastic IP, so images and the DNS record outlive `terraform destroy`.
+- **Terraform** builds everything from `terraform-aws-modules` registry modules, state in S3; the
+  foundation and the stack are two configurations with two state keys.
 - **The controller** installs Ansible from its user data, clones this repository and runs
   `site.yml` – one `terraform apply` brings the whole stack up.
 - **Ansible** finds the hosts through the `aws_ec2` inventory (grouped by the `Role` tag) and talks
@@ -42,7 +51,7 @@ shell, carries the Ansible connection and receives the deploy trigger from CI.
 app/                      Ship microsite (Vite + Three.js), tests, Dockerfile (node build → nginx)
 terraform/                VPC, security groups, IAM, EC2 (ec2.tf + templates/controller.sh.tftpl),
                           transfer bucket; registry.tf reads the ECR repository owned by bootstrap/
-terraform/bootstrap/      ECR repository and the web Elastic IP, own state key, applied once
+terraform/bootstrap/      Foundation: ECR repository and the web Elastic IP, own state key
 ansible/                  ansible.cfg, requirements, inventory/ (aws_ec2 + group_vars), site.yml,
                           playbooks/ (docker, web, deploy, monitoring + templates and Grafana files)
 .github/workflows/        terraform.yml (plan on PR), build-and-deploy.yml, pages.yml
@@ -51,8 +60,9 @@ docs/                     Project site (Jekyll): design notes, runbook, screensh
 
 ## Bringing it up
 
-Full details in the [runbook](https://lexxick.github.io/final-project-example/#runbook). Steps 1–5
-are done once; step 6 is the everyday `apply`.
+Full details in the [runbook](https://lexxick.github.io/final-project-example/#runbook).
+
+### Foundation – once
 
 1. Push the repository; set the Pages source to *GitHub Actions* (the controller clones `main` at boot).
 2. State bucket:
@@ -85,20 +95,24 @@ are done once; step 6 is the everyday `apply`.
    ```
    Also add the `AWS_ROLE_ARN` repository variable, `arn:aws:iam::507861383583:role/devops-github-actions-role`
    (the name is fixed, so once).
-6. The stack – the controller then runs `site.yml` on its own, about ten minutes:
-   ```bash
-   terraform -chdir=terraform init
-   terraform -chdir=terraform apply
-   aws ssm start-session --target "$(terraform -chdir=terraform output -raw controller_instance_id)"
-   sudo tail -f /var/log/cloud-init-output.log        # ends with the PLAY RECAP
-   ```
+
+### Stack – any time
+
+```bash
+terraform -chdir=terraform init
+terraform -chdir=terraform apply
+aws ssm start-session --target "$(terraform -chdir=terraform output -raw controller_instance_id)"
+sudo tail -f /var/log/cloud-init-output.log        # ends with the PLAY RECAP
+```
+
+The controller runs `site.yml` on its own, about ten minutes from `apply` to the recap.
 Verify: `https://web.<domain>` shows the ship, `https://monitoring.<domain>` shows the Grafana login,
 `curl -s localhost:9090/api/v1/targets` on the monitoring server lists `web-server` as `up`.
 
-Teardown is `terraform -chdir=terraform destroy`; steps 2–5 stay, so the next `apply` comes back
-with the last image, the same address, tunnel and secrets – nothing to redo by hand. Note that the OIDC provider and the CI
-role are part of the stack: the first pull-request plan after a teardown fails at *Configure AWS
-credentials* until the stack is applied again.
+Teardown is `terraform -chdir=terraform destroy`; the foundation stays, so the next `apply` comes
+back with the last image, the same address, tunnel and secrets – nothing to redo by hand. The OIDC
+provider and the CI role are part of the stack, so the first pull-request plan after a teardown fails
+at *Configure AWS credentials* until the stack is applied again.
 
 ## Credentials
 
@@ -106,6 +120,28 @@ Nothing secret is committed. The tunnel token and the Grafana admin password are
 parameters that `monitoring.yml` reads at run time into a root-only `.env` on the monitoring server.
 The Grafana login (`admin` and that password) is shared with reviewers separately. CI holds no
 credentials: the GitHub Actions role trusts the repository's OIDC subject and nothing else.
+
+## Screenshots
+
+**The application** – `web.doubleadigital.my` behind the proxied A record.
+
+![The ship](docs/images/ship.png)
+
+**Grafana** – the provisioned *Web Server* dashboard fed by `node_exporter`.
+
+![Web Server dashboard](docs/images/grafana.png)
+
+**Terraform plan on a pull request** – fmt, validate and plan posted by `terraform.yml`.
+
+![Plan comment](docs/images/plan-comment.png)
+
+**Build and deploy** – image built, pushed to ECR and deployed through SSM Run Command.
+
+![Build and deploy run](docs/images/deploy-run.png)
+
+**Session Manager** – a shell on the controller after the second `site.yml` run, `changed=0`.
+
+![Controller session](docs/images/session.png)
 
 ## Licence
 

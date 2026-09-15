@@ -12,6 +12,7 @@ layout: default
 
 ## Architecture
 
+<div style="background:#0b0f19;border-radius:8px;padding:1rem 0.5rem;margin-bottom:1rem">
 <pre class="mermaid">
 flowchart TB
     dev([Developer]) -- git push / PR --> gh[GitHub]
@@ -25,11 +26,11 @@ flowchart TB
         subgraph vpc [devops-vpc 10.0.0.0/24]
             igw[devops-igw]
             subgraph pub [devops-public-subnet 10.0.0.0/25]
-                web[devops-web-server<br/>10.0.0.5 + EIP<br/>ship :80 · node_exporter :9100]
+                web[devops-web-server<br/>10.0.0.5 + Elastic IP<br/>ship :80 · node_exporter :9100]
                 ngw[devops-ngw]
             end
             subgraph priv [devops-private-subnet 10.0.0.128/25]
-                ctl[devops-ansible-controller<br/>10.0.0.135]
+                ctl[devops-ansible-controller<br/>10.0.0.135<br/>site.yml at boot]
                 mon[devops-monitoring-server<br/>10.0.0.136<br/>prometheus · grafana · cloudflared]
             end
         end
@@ -45,10 +46,41 @@ flowchart TB
     mon -- scrape :9100 --> web
     mon -- outbound tunnel --> cf
     priv -.-> ngw -.-> igw
+
+    classDef external fill:#1f2937,stroke:#9ca3af,color:#f9fafb
+    classDef service fill:#78350f,stroke:#f59e0b,color:#fef3c7
+    classDef network fill:#1e293b,stroke:#64748b,color:#e2e8f0
+    classDef web fill:#14532d,stroke:#22c55e,color:#dcfce7
+    classDef controller fill:#1e3a8a,stroke:#60a5fa,color:#dbeafe
+    classDef monitoring fill:#4c1d95,stroke:#a78bfa,color:#ede9fe
+    class dev,users,gh,actions,cf external
+    class ecr,ssm,s3 service
+    class igw,ngw network
+    class web web
+    class ctl controller
+    class mon monitoring
+    style aws fill:#111827,stroke:#f59e0b,color:#fbbf24
+    style vpc fill:#0f172a,stroke:#64748b,color:#cbd5e1
+    style pub fill:#052e16,stroke:#22c55e,color:#86efac
+    style priv fill:#172554,stroke:#60a5fa,color:#93c5fd
 </pre>
+</div>
 <script type="module">
   import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
-  mermaid.initialize({ startOnLoad: true, theme: "neutral" });
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: "base",
+    themeVariables: {
+      darkMode: true,
+      background: "#0b0f19",
+      primaryColor: "#1f2937",
+      primaryTextColor: "#f9fafb",
+      primaryBorderColor: "#9ca3af",
+      lineColor: "#94a3b8",
+      edgeLabelBackground: "#0b0f19",
+      fontFamily: "inherit"
+    }
+  });
 </script>
 
 Three Ubuntu 24.04 `t3.micro` instances in one VPC. The web server is the only machine with a public
@@ -56,6 +88,16 @@ address. The Ansible controller and the monitoring server sit in the private sub
 internet through the NAT gateway. Nothing listens on port 22 anywhere: every interactive or automated
 login goes through AWS Systems Manager, and Grafana is published through a Cloudflare tunnel instead
 of an open port.
+
+## Two layers
+
+| Layer | Owns | Lifecycle |
+| --- | --- | --- |
+| **Foundation** | state bucket, ECR repository and its images, the web Elastic IP (`terraform/bootstrap/`), Cloudflare DNS and tunnel, the two Parameter Store secrets, the `AWS_ROLE_ARN` variable | created once, never destroyed with the stack |
+| **Stack** | VPC, subnets, NAT, security groups, IAM roles and the OIDC provider, the three servers (`terraform/`) | `apply` and `destroy` at will; converges itself at boot |
+
+Everything external points at the foundation – DNS at the Elastic IP, CI at the repository name –
+so rebuilding the stack changes nothing outside AWS.
 
 ## Phase 1 – Infrastructure (Terraform)
 
@@ -183,6 +225,8 @@ the same code path is used whether a deploy comes from CI or from a shell on the
 - Terraform ≥ 1.11, Docker, the Session Manager plugin for the AWS CLI.
 - A Cloudflare zone for your domain (replace `example.com` throughout).
 
+Steps 1–4 build the foundation and are done once. Step 5 onwards is the stack.
+
 ### 1. Repository and Pages
 
 Push this repository to `github.com/Lexxick/final-project-example` (public). In **Settings →
@@ -247,7 +291,7 @@ aws ssm put-parameter --name /devops-bootcamp/grafana-admin-password \
   --type SecureString --value '<a strong password>'
 ```
 
-### 5. Apply
+### 5. Apply the stack
 
 ```bash
 cd terraform
