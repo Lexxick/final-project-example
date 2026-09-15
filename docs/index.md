@@ -70,7 +70,8 @@ State lives in S3 (`devops-bootcamp-terraform-syedazam-507861383583`) with the n
 | `network.tf` | `vpc` module: VPC, one public and one private subnet, IGW, single NAT gateway, route tables |
 | `security.tf` | `security-group` module: `devops-public-sg` (80 from anywhere, 9100 from the monitoring server) and `devops-private-sg` (no inbound) |
 | `iam.tf` | `iam` module: one role per server, the GitHub OIDC provider and the GitHub Actions role |
-| `registry.tf` | `ecr` module: the application repository, scan on push, keep the last 10 images |
+| `registry.tf` | `aws_ecr_repository` data source; the registry itself is owned by `bootstrap/` |
+| `bootstrap/` | Second, tiny configuration (own state key) with the `ecr` module: scan on push, keep the last 10 images. Applied once and left in place so images survive `terraform destroy` of the stack |
 | `storage.tf` | `s3-bucket` module: transfer bucket for the Ansible SSM connection, objects expire after a day |
 | `ec2.tf`, `templates/controller.sh.tftpl` | `ec2-instance` module ×3 and the controller bootstrap script |
 | `outputs.tf` | Public IP, instance IDs, ECR URL, CI role ARN, the Session Manager command |
@@ -103,7 +104,9 @@ security groups never need to change.
 Session Manager plugin, clones this repository to `/home/ubuntu/final-project-example`, creates a
 virtualenv in `/opt/ansible` from `ansible/requirements.txt` (ansible-core 2.21, boto3) and installs
 the Galaxy dependencies from `ansible/requirements.yml` (`geerlingguy.docker`, `amazon.aws`,
-`community.docker`). Nothing else is ever installed by hand.
+`community.docker`), then runs `site.yml`. Nothing else is ever installed by hand: after
+`terraform apply` the fleet converges on its own, and `/var/log/cloud-init-output.log` on the
+controller holds the play output.
 
 ### Dynamic inventory and transport
 
@@ -129,7 +132,9 @@ Group variables carry the values that differ per environment: the ECR repository
 ### Idempotency
 
 Every task uses a declarative module (`apt`, `file`, `copy`, `template`, `docker_compose_v2`,
-`uri`) and no `command` or `shell`. A second run of `site.yml` reports `changed=0` on every host.
+`uri`) and no `command` or `shell`. `site.yml` starts with `wait_for_connection`, so the boot-time
+run waits for the other two instances to register with Systems Manager instead of racing them; a
+second run by hand reports `changed=0` on every host.
 Deploying a new image is the one intentional change: CI passes `-e image_tag=sha-…` and only the
 `ship` service is recreated.
 
@@ -172,7 +177,7 @@ the same code path is used whether a deploy comes from CI or from a shell on the
 ### 0. Prerequisites
 
 - AWS CLI v2 authenticated to account `507861383583`, region `ap-southeast-1`.
-- Terraform ≥ 1.11, the Session Manager plugin for the AWS CLI.
+- Terraform ≥ 1.11, Docker, the Session Manager plugin for the AWS CLI.
 - A Cloudflare zone for your domain (replace `example.com` throughout).
 
 ### 1. Repository and Pages
@@ -188,7 +193,11 @@ repository IDs. Put it in `terraform/terraform.tfvars` as `github_oidc_subject`:
 gh api repos/Lexxick/final-project-example --jq '"\(.owner.login)@\(.owner.id)/\(.name)@\(.id)"'
 ```
 
-### 2. State bucket
+### 2. State bucket and registry
+
+The state bucket is the one thing created by hand – a configuration cannot store its state in a
+bucket it has not created yet. The registry is a separate Terraform configuration with its own state
+key, applied once and left in place across `terraform destroy` of the main stack.
 
 ```bash
 aws s3api create-bucket --bucket devops-bootcamp-terraform-syedazam-507861383583 \
@@ -197,9 +206,42 @@ aws s3api put-bucket-versioning --bucket devops-bootcamp-terraform-syedazam-5078
   --versioning-configuration Status=Enabled
 aws s3api put-public-access-block --bucket devops-bootcamp-terraform-syedazam-507861383583 \
   --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+
+cd terraform/bootstrap
+terraform init
+terraform apply          # the ECR repository, its lifecycle policy and repository policy
+cd ../..
 ```
 
-### 3. Apply
+The controller deploys `latest` at boot, so the registry needs one image before the first `apply`.
+CI pushes every later one; this first push is the only one done from a laptop:
+
+```bash
+image="$(terraform -chdir=terraform/bootstrap output -raw repository_url):latest"
+aws ecr get-login-password | docker login --username AWS --password-stdin "${image%%/*}"
+docker build -t "$image" app/          # from the repository root
+docker push "$image"
+```
+
+### 3. Cloudflare tunnel
+
+1. **Zero Trust → Networks → Tunnels → Create a tunnel** (Cloudflared): name it `devops-bootcamp`,
+   copy the token from the install command (the long string after `--token`).
+2. In the tunnel's **Public Hostname** tab add `monitoring.example.com` → service type **HTTP**,
+   URL `grafana:3000`.
+
+### 4. Parameter Store
+
+The monitoring playbook reads both at boot, so they must exist before `terraform apply`.
+
+```bash
+aws ssm put-parameter --name /devops-bootcamp/tunnel-token \
+  --type SecureString --value '<tunnel token>'
+aws ssm put-parameter --name /devops-bootcamp/grafana-admin-password \
+  --type SecureString --value '<a strong password>'
+```
+
+### 5. Apply
 
 ```bash
 cd terraform
@@ -209,58 +251,40 @@ terraform apply
 terraform output
 ```
 
-Keep `web_public_ip` and `github_actions_role_arn` for the next steps.
+The controller installs Ansible, waits for the other two instances to register with Systems
+Manager, and runs `site.yml` – Docker on both hosts, the ship from ECR, the monitoring stack. Allow
+about ten minutes, then check the play recap:
 
-### 4. Repository variable
+```bash
+aws ssm start-session --target "$(terraform output -raw controller_instance_id)"
+tail -f /var/log/cloud-init-output.log
+```
+
+### 6. DNS
+
+**DNS**: add an `A` record `web` → `web_public_ip`, proxy status *Proxied*. **SSL/TLS →
+Overview**: set the encryption mode to *Flexible*.
+
+### 7. Repository variable
 
 **Settings → Secrets and variables → Actions → Variables**: add `AWS_ROLE_ARN` with the value of
 `github_actions_role_arn`. Until it is set, the build workflow skips itself.
 
-### 5. Cloudflare
+### 8. Shipping a change
 
-1. **DNS**: add an `A` record `web` → `web_public_ip`, proxy status *Proxied*.
-2. **SSL/TLS → Overview**: set the encryption mode to *Flexible*.
-3. **Zero Trust → Networks → Tunnels → Create a tunnel** (Cloudflared): name it `devops-bootcamp`,
-   copy the token from the install command (the long string after `--token`).
-4. In the tunnel's **Public Hostname** tab add `monitoring.example.com` → service type **HTTP**,
-   URL `grafana:3000`.
+Push to `app/` (or **Actions → Build and deploy → Run workflow**). The build job pushes
+`sha-<short>` and `latest`; the deploy job runs `playbooks/web.yml` on the controller and only the
+`ship` service is recreated.
 
-### 6. Parameter Store
-
-```bash
-aws ssm put-parameter --name /devops-bootcamp/tunnel-token \
-  --type SecureString --value '<tunnel token>'
-aws ssm put-parameter --name /devops-bootcamp/grafana-admin-password \
-  --type SecureString --value '<a strong password>'
-```
-
-### 7. Docker on the fleet
-
-Open a shell on the controller and install Docker on both managed hosts:
+### 9. Running the playbooks by hand
 
 ```bash
 aws ssm start-session --target "$(cd terraform && terraform output -raw controller_instance_id)"
 sudo -iu ubuntu
 cd ~/final-project-example/ansible
 ansible-inventory --graph          # expect @web and @monitoring
-ansible-playbook playbooks/docker.yml
+ansible-playbook site.yml          # changed=0 everywhere after the boot-time run
 ```
-
-### 8. First image and deploy
-
-**Actions → Build and deploy → Run workflow** on `main`. The build job pushes the image to ECR; the
-deploy job runs `playbooks/web.yml` on the controller and the ship is live on `web_public_ip`.
-
-### 9. Full convergence
-
-Back on the controller:
-
-```bash
-ansible-playbook site.yml
-```
-
-This brings the monitoring stack up and, because the web server is already deployed, reports no
-changes for it. Run it a second time to see `changed=0` everywhere.
 
 ### 10. Verify
 
@@ -278,7 +302,9 @@ aws s3 rm s3://devops-bootcamp-terraform-syedazam-507861383583 --recursive
 aws s3api delete-bucket --bucket devops-bootcamp-terraform-syedazam-507861383583
 ```
 
-Then delete the tunnel and the DNS records in Cloudflare.
+Then delete the tunnel and the DNS records in Cloudflare. The registry is left in place on purpose
+(a few cents a month at most); `terraform -chdir=terraform/bootstrap destroy` removes it and its
+images too.
 
 ## Screenshots
 

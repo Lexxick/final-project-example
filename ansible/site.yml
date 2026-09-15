@@ -1,4 +1,12 @@
 ---
+- name: Wait for the managed hosts to register with Systems Manager
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Wait for the SSM connection
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+
 - name: Install Docker on all managed hosts
   ansible.builtin.import_playbook: playbooks/docker.yml
 

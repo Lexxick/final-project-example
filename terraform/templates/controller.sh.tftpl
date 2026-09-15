@@ -24,3 +24,6 @@ done
 
 cd /home/ubuntu/final-project-example/ansible
 sudo -u ubuntu -H ansible-galaxy install -r requirements.yml
+
+# Converge the fleet; site.yml first waits for the other two instances to register with SSM.
+sudo -u ubuntu -H ansible-playbook site.yml
