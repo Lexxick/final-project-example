@@ -1,0 +1,3 @@
+title: DevOps Bootcamp – Final Project
+description: Terraform, Ansible over SSM, Docker, Prometheus and Grafana behind a Cloudflare tunnel, shipped by GitHub Actions
+theme: jekyll-theme-cayman
