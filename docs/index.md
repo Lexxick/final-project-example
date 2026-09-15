@@ -282,10 +282,22 @@ Then delete the tunnel and the DNS records in Cloudflare.
 
 ## Screenshots
 
-Stored under `docs/images/`:
+**The application** – `web.example.com` behind the proxied A record.
 
-- `ship.png` – the application at `web.example.com`
-- `grafana.png` – the Web Server dashboard
-- `plan-comment.png` – a Terraform plan posted on a pull request
-- `deploy-run.png` – a green *Build and deploy* run
-- `session.png` – a Session Manager shell on the controller
+![The ship](images/ship.png)
+
+**Grafana** – the provisioned *Web Server* dashboard fed by `node_exporter`.
+
+![Web Server dashboard](images/grafana.png)
+
+**Terraform plan on a pull request** – fmt, validate and plan posted by `terraform.yml`.
+
+![Plan comment](images/plan-comment.png)
+
+**Build and deploy** – image built, pushed to ECR and deployed through SSM Run Command.
+
+![Build and deploy run](images/deploy-run.png)
+
+**Session Manager** – a shell on the controller after the second `site.yml` run, `changed=0`.
+
+![Controller session](images/session.png)
