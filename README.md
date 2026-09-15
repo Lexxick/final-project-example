@@ -108,7 +108,7 @@ aws ssm start-session --target "$(terraform output -raw controller_instance_id)"
 sudo tail -f /var/log/cloud-init-output.log        # ends with the PLAY RECAP
 ```
 
-The controller runs `site.yml` on its own, about ten minutes from `apply` to the recap.
+The controller runs `site.yml` on its own, 15–20 minutes from `apply` to the recap.
 Verify: `https://web.<domain>` shows the ship, `https://monitoring.<domain>` shows the Grafana login,
 `curl -s localhost:9090/api/v1/targets` on the monitoring server lists `web-server` as `up`.
 

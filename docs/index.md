@@ -215,7 +215,7 @@ aws ssm start-session --target "$(terraform output -raw controller_instance_id)"
 sudo tail -f /var/log/cloud-init-output.log        # ends with the PLAY RECAP
 ```
 
-About ten minutes from `apply` to the recap: Docker on both hosts, the ship from ECR, the monitoring
+About 15–20 minutes from `apply` to the recap: Docker on both hosts, the ship from ECR, the monitoring
 stack. The OIDC provider and the CI role are part of the stack, so after a teardown the first
 pull-request plan fails at *Configure AWS credentials* until the stack is applied again.
 
