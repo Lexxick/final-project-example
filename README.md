@@ -76,12 +76,14 @@ Full details in the [runbook](https://lexxick.github.io/final-project-example/#r
    ```
 3. Registry and Elastic IP:
    ```bash
-   terraform -chdir=terraform/bootstrap init
-   terraform -chdir=terraform/bootstrap apply
+   cd terraform/bootstrap
+   terraform init
+   terraform apply
    ```
 4. First image (the controller deploys `latest` at boot; CI pushes every later one):
    ```bash
-   image="$(terraform -chdir=terraform/bootstrap output -raw repository_url):latest"
+   image="$(terraform output -raw repository_url):latest"
+   cd ../..
    aws ecr get-login-password | docker login --username AWS --password-stdin "${image%%/*}"
    docker build -t "$image" app/
    docker push "$image"
@@ -99,9 +101,10 @@ Full details in the [runbook](https://lexxick.github.io/final-project-example/#r
 ### Stack – any time
 
 ```bash
-terraform -chdir=terraform init
-terraform -chdir=terraform apply
-aws ssm start-session --target "$(terraform -chdir=terraform output -raw controller_instance_id)"
+cd terraform
+terraform init
+terraform apply
+aws ssm start-session --target "$(terraform output -raw controller_instance_id)"
 sudo tail -f /var/log/cloud-init-output.log        # ends with the PLAY RECAP
 ```
 
@@ -109,7 +112,7 @@ The controller runs `site.yml` on its own, about ten minutes from `apply` to the
 Verify: `https://web.<domain>` shows the ship, `https://monitoring.<domain>` shows the Grafana login,
 `curl -s localhost:9090/api/v1/targets` on the monitoring server lists `web-server` as `up`.
 
-Teardown is `terraform -chdir=terraform destroy`; the foundation stays, so the next `apply` comes
+Teardown is `terraform destroy` in `terraform/`; the foundation stays, so the next `apply` comes
 back with the last image, the same address, tunnel and secrets – nothing to redo by hand. The OIDC
 provider and the CI role are part of the stack, so the first pull-request plan after a teardown fails
 at *Configure AWS credentials* until the stack is applied again.

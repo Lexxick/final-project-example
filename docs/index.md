@@ -13,7 +13,7 @@ layout: default
 ## Architecture
 
 <div style="background:#0b0f19;border-radius:8px;padding:1rem 0.5rem;margin-bottom:1rem">
-<pre class="mermaid">
+<div class="mermaid">
 flowchart TB
     dev([Developer]) -- git push / PR --> gh[GitHub]
     gh -- OIDC, no keys --> actions[GitHub Actions]
@@ -63,7 +63,7 @@ flowchart TB
     style vpc fill:#0f172a,stroke:#64748b,color:#cbd5e1
     style pub fill:#052e16,stroke:#22c55e,color:#86efac
     style priv fill:#172554,stroke:#60a5fa,color:#93c5fd
-</pre>
+</div>
 </div>
 <script type="module">
   import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
@@ -78,16 +78,22 @@ flowchart TB
       primaryBorderColor: "#9ca3af",
       lineColor: "#94a3b8",
       edgeLabelBackground: "#0b0f19",
-      fontFamily: "inherit"
+      fontFamily: "'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif",
+      fontSize: "15px"
     }
   });
 </script>
 
-Three Ubuntu 24.04 `t3.micro` instances in one VPC. The web server is the only machine with a public
-address. The Ansible controller and the monitoring server sit in the private subnet and reach the
-internet through the NAT gateway. Nothing listens on port 22 anywhere: every interactive or automated
-login goes through AWS Systems Manager, and Grafana is published through a Cloudflare tunnel instead
-of an open port.
+Three Ubuntu 24.04 `t3.micro` instances in one VPC (`10.0.0.0/24`, `ap-southeast-1a`):
+
+| Host | Subnet | Runs |
+| --- | --- | --- |
+| `devops-web-server` | public, Elastic IP | the ship container on `:80`, `node_exporter` on `:9100` |
+| `devops-ansible-controller` | private | Ansible; reaches the other hosts over SSM |
+| `devops-monitoring-server` | private | Prometheus, Grafana, `cloudflared` (outbound tunnel, no open port) |
+
+Only the web server has a public address. Nothing listens on port 22: Session Manager gives the
+shell, carries the Ansible connection and receives the deploy trigger from CI.
 
 ## Two layers
 
@@ -99,26 +105,26 @@ of an open port.
 Everything external points at the foundation – DNS at the Elastic IP, CI at the repository name –
 so rebuilding the stack changes nothing outside AWS.
 
-## Phase 1 – Infrastructure (Terraform)
+## How it works
 
-Everything is built from `terraform-aws-modules` registry modules with the AWS provider `~> 6.0`.
-State lives in S3 (`devops-bootcamp-terraform-syedazam-507861383583`) with the native S3 lock file.
+- **Terraform** builds everything from `terraform-aws-modules` registry modules, state in S3; the
+  foundation and the stack are two configurations with two state keys.
+- **The controller** installs Ansible from its user data, clones this repository and runs
+  `site.yml` – one `terraform apply` brings the whole stack up. All three instances first wait for
+  their instance profile credentials and restart the SSM agent, which otherwise backs off for
+  30 minutes if it starts too early.
+- **Ansible** finds the hosts through the `aws_ec2` inventory (grouped by the `Role` tag) and talks
+  to them over the `aws_ssm` connection. `site.yml` starts with `wait_for_connection`, so the
+  boot-time run waits for the other two instances. Declarative modules only; a second run is
+  `changed=0`.
+- **Monitoring**: `node_exporter` on the web server, scraped by Prometheus every 15 s over the
+  private network (the only inbound rule for `9100` is from the monitoring server); Grafana is
+  provisioned from files and published through a Cloudflare tunnel, no port open.
+- **CI/CD** authenticates with OIDC. A pull request touching `terraform/` gets a plan comment; a push
+  to `app/` builds the image, pushes `sha-<short>` and `latest` to ECR, and runs `web.yml` on the
+  controller through SSM Run Command – the same code path as a deploy by hand.
 
-| File | Owns |
-| --- | --- |
-| `versions.tf` | Terraform / provider constraints and the S3 backend |
-| `providers.tf` | Region and `default_tags` (`Project`, `Owner`, `ManagedBy`) |
-| `variables.tf`, `terraform.tfvars` | Region, CIDRs, private IPs, owner, GitHub repository |
-| `network.tf` | `vpc` module: VPC, one public and one private subnet, IGW, single NAT gateway, route tables |
-| `security.tf` | `security-group` module: `devops-public-sg` (80 from anywhere, 9100 from the monitoring server) and `devops-private-sg` (no inbound) |
-| `iam.tf` | `iam` module: one role per server, the GitHub OIDC provider and the GitHub Actions role |
-| `registry.tf` | `aws_ecr_repository` data source; the registry itself is owned by `bootstrap/` |
-| `bootstrap/` | Second, tiny configuration (own state key): the `ecr` module (scan on push, keep the last 10 images) and the web server's Elastic IP. Applied once and left in place so images and the DNS record survive `terraform destroy` of the stack |
-| `storage.tf` | `s3-bucket` module: transfer bucket for the Ansible SSM connection, objects expire after a day |
-| `ec2.tf`, `templates/` | `ec2-instance` module ×3, the association of the bootstrap Elastic IP with the web server, `node.sh` (waits for the instance profile, restarts the SSM agent) and the controller bootstrap script |
-| `outputs.tf` | Public IP, instance IDs, ECR URL, CI role ARN, the Session Manager command |
-
-### IAM
+## IAM
 
 | Role | Trust | Permissions |
 | --- | --- | --- |
@@ -131,101 +137,10 @@ Every policy is scoped to the resource it is for; the only `*` resources are act
 support resource-level permissions (`ecr:GetAuthorizationToken`, `ec2:DescribeInstances`,
 `ssm:GetCommandInvocation`).
 
-### Why no port 22
-
-The SSM agent ships with the Ubuntu AMI and only needs outbound HTTPS. With the instance profile
-above, `aws ssm start-session` gives an audited shell without a key pair, a bastion, or an inbound
-rule. The same channel carries Ansible (Phase 2) and the deploy trigger from CI (CI/CD), so the
-security groups never need to change.
-
-## Phase 2 – Configuration (Ansible)
-
-### Controller bootstrap
-
-`terraform/templates/controller.sh.tftpl` runs once as user data on the controller: it installs the
-Session Manager plugin, clones this repository to `/home/ubuntu/final-project-example`, creates a
-virtualenv in `/opt/ansible` from `ansible/requirements.txt` (ansible-core 2.21, boto3) and installs
-the Galaxy dependencies from `ansible/requirements.yml` (`geerlingguy.docker`, `amazon.aws`,
-`community.docker`), then runs `site.yml`. All three instances first wait for their instance
-profile credentials to appear in the metadata service and restart the SSM agent (`node.sh`): an
-agent that starts before the profile has propagated backs off for 30 minutes. Nothing else is ever
-installed by hand: after
-`terraform apply` the fleet converges on its own, and `/var/log/cloud-init-output.log` on the
-controller holds the play output.
-
-### Dynamic inventory and transport
-
-`ansible/inventory/devops.aws_ec2.yaml` asks EC2 for running instances tagged
-`Project=devops-bootcamp` and groups them by their `Role` tag, so the groups `web` and `monitoring`
-exist without any static host list. `inventory/group_vars/all.yaml` switches the connection plugin to
-`amazon.aws.aws_ssm`: modules run over a Session Manager session and files travel through the
-transfer bucket. The controller role is the only identity that can open those sessions.
-
-### Playbooks
-
-| Playbook | Hosts | Does |
-| --- | --- | --- |
-| `site.yml` | all | Imports the three playbooks below, in order |
-| `playbooks/docker.yml` | `web`, `monitoring` | Docker Engine and the Compose plugin via `geerlingguy.docker` |
-| `playbooks/web.yml` | `web` | ECR credential helper for root, then imports `deploy.yml` |
-| `playbooks/deploy.yml` | `web` | Renders `compose.yaml` (ship image + node_exporter), `docker compose up` with `pull: always`, waits for HTTP 200 |
-| `playbooks/monitoring.yml` | `monitoring` | Grafana provisioning, Prometheus config, secrets file from Parameter Store, `docker compose up` |
-
-Group variables carry the values that differ per environment: the ECR repository and image tag for
-`web`, the domain, the web server's private IP and the two parameter names for `monitoring`.
-
-### Idempotency
-
-Every task uses a declarative module (`apt`, `file`, `copy`, `template`, `docker_compose_v2`,
-`uri`) and no `command` or `shell`. `site.yml` starts with `wait_for_connection`, so the boot-time
-run waits for the other two instances to register with Systems Manager instead of racing them; a
-second run by hand reports `changed=0` on every host.
-Deploying a new image is the one intentional change: CI passes `-e image_tag=sha-…` and only the
-`ship` service is recreated.
-
-## Phase 3 – Monitoring and access
-
-```
-web server                     monitoring server                     Cloudflare
-node_exporter :9100  <-scrape-  prometheus :9090 (localhost only)
-                                grafana :3000 (no host port)  <---  cloudflared  ==tunnel==>  monitoring.example.com
-```
-
-- `node_exporter` runs on the web server with `network_mode: host`, `pid: host` and the root
-  filesystem mounted read-only, so CPU, memory, disk and uptime are the host's, not the container's.
-- Prometheus scrapes it every 15 s over the private network; the only inbound rule for 9100 is from
-  `10.0.0.136/32`.
-- Grafana is provisioned from files: the Prometheus datasource and the "Web Server" dashboard exist
-  on first start, no clicking. The admin password comes from Parameter Store.
-- Grafana publishes no port at all. `cloudflared` opens an outbound tunnel and Cloudflare routes
-  `monitoring.example.com` to `http://grafana:3000` on the Compose network. The monitoring server keeps
-  no public IP and no inbound rules.
-- The web server sits behind a proxied A record with SSL mode *Flexible*: browsers get TLS from
-  Cloudflare, the origin speaks plain HTTP on port 80.
-
-## CI/CD (GitHub Actions)
-
-All three workflows authenticate to AWS with OIDC – the repository holds no access keys, only the
-`AWS_ROLE_ARN` variable.
-
-| Workflow | Trigger | Steps |
-| --- | --- | --- |
-| `terraform.yml` | pull request touching `terraform/**` | `fmt -check`, `init`, `validate`, `plan -detailed-exitcode`; the plan is posted (and updated) as a PR comment; the job fails on formatting or plan errors |
-| `build-and-deploy.yml` | push to `main` touching `app/**`, or manual | Build the image with Buildx, push `sha-<short>` and `latest` to ECR, then `ssm send-command` runs `playbooks/web.yml -e image_tag=sha-…` on the controller and fails unless the command status is `Success` |
-| `pages.yml` | push to `main` touching `docs/**`, or manual | Jekyll build of `docs/` and deploy to GitHub Pages |
-
-The deploy job never talks to the web server. It only tells the controller to run the playbook, so
-the same code path is used whether a deploy comes from CI or from a shell on the controller.
-
 ## Runbook
 
-### 0. Prerequisites
-
-- AWS CLI v2 authenticated to account `507861383583`, region `ap-southeast-1`.
-- Terraform ≥ 1.11, Docker, the Session Manager plugin for the AWS CLI.
-- A Cloudflare zone for your domain (replace `example.com` throughout).
-
-Steps 1–4 build the foundation and are done once. Step 5 onwards is the stack.
+Prerequisites: AWS CLI v2 on account `507861383583` (region `ap-southeast-1`), Terraform ≥ 1.11,
+Docker, the Session Manager plugin, a Cloudflare zone. Steps 1–5 are the foundation, done once.
 
 ### 1. Repository and Pages
 
@@ -240,12 +155,7 @@ repository IDs. Put it in `terraform/terraform.tfvars` as `github_oidc_subject`:
 gh api repos/Lexxick/final-project-example --jq '"\(.owner.login)@\(.owner.id)/\(.name)@\(.id)"'
 ```
 
-### 2. State bucket, registry and address
-
-The state bucket is the one thing created by hand – a configuration cannot store its state in a
-bucket it has not created yet. The registry and the web server's Elastic IP are a separate Terraform
-configuration with its own state key, applied once and left in place across `terraform destroy` of
-the main stack.
+### 2. State bucket
 
 ```bash
 aws s3api create-bucket --bucket devops-bootcamp-terraform-syedazam-507861383583 \
@@ -254,35 +164,34 @@ aws s3api put-bucket-versioning --bucket devops-bootcamp-terraform-syedazam-5078
   --versioning-configuration Status=Enabled
 aws s3api put-public-access-block --bucket devops-bootcamp-terraform-syedazam-507861383583 \
   --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
-
-cd terraform/bootstrap
-terraform init
-terraform apply          # the ECR repository, its policies, and the Elastic IP
-cd ../..
 ```
 
-The controller deploys `latest` at boot, so the registry needs one image before the first `apply`.
-CI pushes every later one; this first push is the only one done from a laptop:
+### 3. Registry, Elastic IP and the first image
 
 ```bash
-image="$(terraform -chdir=terraform/bootstrap output -raw repository_url):latest"
+cd terraform/bootstrap
+terraform init
+terraform apply                      # ECR repository, its policies, the Elastic IP
+image="$(terraform output -raw repository_url):latest"
+cd ../..
 aws ecr get-login-password | docker login --username AWS --password-stdin "${image%%/*}"
-docker build -t "$image" app/          # from the repository root
+docker build -t "$image" app/
 docker push "$image"
 ```
 
-### 3. Cloudflare
+The controller deploys `latest` at boot, so the registry needs one image before the first apply.
+CI pushes every later one.
+
+### 4. Cloudflare and secrets
 
 1. **DNS**: add an `A` record `web` → the `web_public_ip` output of `terraform/bootstrap`, proxy
    status *Proxied*. **SSL/TLS → Overview**: set the encryption mode to *Flexible*.
 2. **Zero Trust → Networks → Tunnels → Create a tunnel** (Cloudflared): name it `devops-bootcamp`,
    copy the token from the install command (the long string after `--token`).
-3. In the tunnel's **Public Hostname** tab add `monitoring.example.com` → service type **HTTP**,
+3. In the tunnel's **Public Hostname** tab add `monitoring.doubleadigital.my` → service type **HTTP**,
    URL `grafana:3000`.
 
-### 4. Parameter Store
-
-The monitoring playbook reads both at boot, so they must exist before `terraform apply`.
+The monitoring playbook reads both secrets at boot, so they go in before the stack:
 
 ```bash
 aws ssm put-parameter --name /devops-bootcamp/tunnel-token \
@@ -291,68 +200,48 @@ aws ssm put-parameter --name /devops-bootcamp/grafana-admin-password \
   --type SecureString --value '<a strong password>'
 ```
 
-### 5. Apply the stack
+### 5. Repository variable
+
+**Settings → Secrets and variables → Actions → Variables**: add `AWS_ROLE_ARN` =
+`arn:aws:iam::507861383583:role/devops-github-actions-role`. The name is fixed, so once.
+
+### 6. Apply the stack
 
 ```bash
 cd terraform
 terraform init
-terraform plan
 terraform apply
-terraform output
-```
-
-The controller installs Ansible, waits for the other two instances to register with Systems
-Manager, and runs `site.yml` – Docker on both hosts, the ship from ECR, the monitoring stack. Allow
-about ten minutes, then check the play recap:
-
-```bash
 aws ssm start-session --target "$(terraform output -raw controller_instance_id)"
-sudo tail -f /var/log/cloud-init-output.log
+sudo tail -f /var/log/cloud-init-output.log        # ends with the PLAY RECAP
 ```
 
-The OIDC provider and the CI role are part of this stack, so after a full teardown the first plan
-on a pull request fails at *Configure AWS credentials* until the stack is applied again.
+About ten minutes from `apply` to the recap: Docker on both hosts, the ship from ECR, the monitoring
+stack. The OIDC provider and the CI role are part of the stack, so after a teardown the first
+pull-request plan fails at *Configure AWS credentials* until the stack is applied again.
 
-### 6. Repository variable
+### 7. Verify
 
-**Settings → Secrets and variables → Actions → Variables**: add `AWS_ROLE_ARN` with the value of
-`github_actions_role_arn`. Until it is set, the build workflow skips itself.
+- <https://web.doubleadigital.my> shows the ship; `curl -I http://<web_public_ip>` returns `200`.
+- <https://monitoring.doubleadigital.my> shows the Grafana login; the *Web Server* dashboard has data.
+- On the monitoring server, `curl -s localhost:9090/api/v1/targets` lists `web-server` as `up`.
+- A pull request that edits any `.tf` file gets the plan as a comment.
+- On the controller, `ansible-playbook site.yml` a second time reports `changed=0` everywhere.
 
-### 7. Shipping a change
+### 8. Shipping a change
 
 Push to `app/` (or **Actions → Build and deploy → Run workflow**). The build job pushes
 `sha-<short>` and `latest`; the deploy job runs `playbooks/web.yml` on the controller and only the
 `ship` service is recreated.
 
-### 8. Running the playbooks by hand
-
-```bash
-aws ssm start-session --target "$(cd terraform && terraform output -raw controller_instance_id)"
-sudo -iu ubuntu
-cd ~/final-project-example/ansible
-ansible-inventory --graph          # expect @web and @monitoring
-ansible-playbook site.yml          # changed=0 everywhere after the boot-time run
-```
-
-### 9. Verify
-
-- <https://web.doubleadigital.my> shows the ship; `curl -I http://<web_public_ip>` returns `200`.
-- <https://monitoring.doubleadigital.my> shows the Grafana login; the *Web Server* dashboard has data.
-- On the monitoring server, `curl -s localhost:9090/api/v1/targets` lists `web-server` as `up`.
-- Open a pull request that edits any `.tf` file: the plan appears as a comment.
-
-### 10. Teardown
+### 9. Teardown
 
 ```bash
 cd terraform && terraform destroy
-aws ssm delete-parameters --names /devops-bootcamp/tunnel-token /devops-bootcamp/grafana-admin-password
-aws s3 rm s3://devops-bootcamp-terraform-syedazam-507861383583 --recursive
-aws s3api delete-bucket --bucket devops-bootcamp-terraform-syedazam-507861383583
 ```
 
-Then delete the tunnel and the DNS records in Cloudflare. The registry is left in place on purpose
-(a few cents a month at most) and so is the Elastic IP (about $3.65 a month while idle);
-`terraform -chdir=terraform/bootstrap destroy` removes both, images included.
+The foundation stays: the next `apply` comes back with the last image, the same address, tunnel and
+secrets. To remove everything, `terraform destroy` in `terraform/bootstrap/` (registry, images and
+the Elastic IP), then the state bucket, the parameters, and the tunnel and DNS records in Cloudflare.
 
 ## Screenshots
 
