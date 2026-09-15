@@ -109,7 +109,7 @@ the Galaxy dependencies from `ansible/requirements.yml` (`geerlingguy.docker`, `
 
 `ansible/inventory/devops.aws_ec2.yaml` asks EC2 for running instances tagged
 `Project=devops-bootcamp` and groups them by their `Role` tag, so the groups `web` and `monitoring`
-exist without any static host list. `group_vars/all.yaml` switches the connection plugin to
+exist without any static host list. `inventory/group_vars/all.yaml` switches the connection plugin to
 `amazon.aws.aws_ssm`: modules run over a Session Manager session and files travel through the
 transfer bucket. The controller role is the only identity that can open those sessions.
 
