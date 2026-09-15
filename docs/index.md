@@ -257,8 +257,11 @@ about ten minutes, then check the play recap:
 
 ```bash
 aws ssm start-session --target "$(terraform output -raw controller_instance_id)"
-tail -f /var/log/cloud-init-output.log
+sudo tail -f /var/log/cloud-init-output.log
 ```
+
+The OIDC provider and the CI role are part of this stack, so after a full teardown the first plan
+on a pull request fails at *Configure AWS credentials* until the stack is applied again.
 
 ### 6. DNS
 
