@@ -1,0 +1,6 @@
+---
+- name: Install Docker Engine and the Compose plugin
+  hosts: web:monitoring
+  become: true
+  roles:
+    - geerlingguy.docker

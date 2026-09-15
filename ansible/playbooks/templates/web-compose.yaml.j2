@@ -1,0 +1,16 @@
+services:
+  ship:
+    image: {{ ecr_repository }}:{{ image_tag }}
+    restart: unless-stopped
+    ports:
+      - "80:80"
+
+  node-exporter:
+    image: prom/node-exporter:v1.12.1
+    restart: unless-stopped
+    command:
+      - --path.rootfs=/host
+    network_mode: host
+    pid: host
+    volumes:
+      - /:/host:ro,rslave

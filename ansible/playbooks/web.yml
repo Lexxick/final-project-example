@@ -1,0 +1,29 @@
+---
+- name: Prepare the web server to pull from ECR
+  hosts: web
+  become: true
+  tasks:
+    - name: Install the ECR credential helper
+      ansible.builtin.apt:
+        name: amazon-ecr-credential-helper
+        state: present
+        update_cache: true
+
+    - name: Create the root Docker config directory
+      ansible.builtin.file:
+        path: /root/.docker
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Use the ECR credential helper for all registries
+      ansible.builtin.copy:
+        content: '{"credsStore": "ecr-login"}'
+        dest: /root/.docker/config.json
+        owner: root
+        group: root
+        mode: "0600"
+
+- name: Deploy the application
+  ansible.builtin.import_playbook: deploy.yml

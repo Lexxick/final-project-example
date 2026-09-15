@@ -1,0 +1,9 @@
+---
+- name: Install Docker on all managed hosts
+  ansible.builtin.import_playbook: playbooks/docker.yml
+
+- name: Configure and deploy the web server
+  ansible.builtin.import_playbook: playbooks/web.yml
+
+- name: Configure the monitoring server
+  ansible.builtin.import_playbook: playbooks/monitoring.yml

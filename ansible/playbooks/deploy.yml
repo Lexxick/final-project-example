@@ -1,0 +1,36 @@
+---
+- name: Deploy the application container and node_exporter
+  hosts: web
+  become: true
+  tasks:
+    - name: Create the application directory
+      ansible.builtin.file:
+        path: "{{ ship_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Render the Compose file
+      ansible.builtin.template:
+        src: web-compose.yaml.j2
+        dest: "{{ ship_dir }}/compose.yaml"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Pull the image and bring the stack up
+      community.docker.docker_compose_v2:
+        project_src: "{{ ship_dir }}"
+        pull: always
+        remove_orphans: true
+        state: present
+
+    - name: Wait for the application to answer on port 80
+      ansible.builtin.uri:
+        url: http://localhost/
+        status_code: 200
+      register: health
+      until: health.status == 200
+      retries: 10
+      delay: 3
