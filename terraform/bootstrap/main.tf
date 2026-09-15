@@ -56,6 +56,20 @@ module "ecr" {
   })
 }
 
+# Web server address, kept so the Cloudflare A record never changes.
+resource "aws_eip" "web" {
+  domain = "vpc"
+
+  tags = {
+    Name = "devops-web-eip"
+  }
+}
+
+output "web_public_ip" {
+  description = "Elastic IP for the web server; the Cloudflare A record points here"
+  value       = aws_eip.web.public_ip
+}
+
 output "repository_url" {
   description = "ECR repository URL for docker push"
   value       = module.ecr.repository_url
