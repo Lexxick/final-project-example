@@ -71,7 +71,7 @@ module "controller_role" {
     }
     SessionDocument = {
       actions   = ["ssm:StartSession"]
-      resources = ["arn:aws:ssm:${var.region}::document/SSM-SessionManagerRunShell"]
+      resources = ["arn:aws:ssm:${var.region}:${local.account_id}:document/SSM-SessionManagerRunShell"]
     }
     SessionLifecycle = {
       actions   = ["ssm:TerminateSession", "ssm:ResumeSession"]
