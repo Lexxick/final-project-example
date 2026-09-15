@@ -20,7 +20,7 @@ output "monitoring_instance_id" {
 
 output "ecr_repository_url" {
   description = "ECR repository URL for the application image"
-  value       = module.ecr.repository_url
+  value       = data.aws_ecr_repository.app.repository_url
 }
 
 output "github_actions_role_arn" {

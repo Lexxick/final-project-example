@@ -29,7 +29,9 @@ deploy trigger from CI, so the security groups never need to change.
 with the AWS provider `~> 6.0`. State lives in S3 with the native lock file. Terraform creates the
 network, the security groups, one IAM role per server plus the GitHub OIDC role, the ECR repository,
 the Ansible transfer bucket and the three instances. The controller's user data installs Ansible in
-a virtualenv, clones this repository and pulls the Galaxy dependencies – nothing is installed by hand.
+a virtualenv, clones this repository, pulls the Galaxy dependencies and runs `site.yml`, so one
+`terraform apply` brings up the whole stack. The ECR repository lives in `terraform/bootstrap/`, a
+second configuration applied once, so images outlive `terraform destroy`.
 
 **Configuration – Ansible.** The `amazon.aws.aws_ec2` inventory groups running instances by their
 `Role` tag, so `web` and `monitoring` exist without a static host list. The `amazon.aws.aws_ssm`
@@ -75,7 +77,8 @@ terraform/
   network.tf                  VPC, public and private subnet, IGW, single NAT gateway
   security.tf                 devops-public-sg (80 from anywhere, 9100 from monitoring), devops-private-sg
   iam.tf                      Instance roles, GitHub OIDC provider and the GitHub Actions role
-  registry.tf storage.tf      ECR repository (scan on push, keep 10), Ansible transfer bucket
+  registry.tf storage.tf      ECR repository (data source), Ansible transfer bucket
+  bootstrap/                  Separate configuration owning the ECR repository (applied once, own state key)
   ec2.tf                      The three instances; templates/controller.sh.tftpl bootstraps the controller
   outputs.tf                  Public IP, instance IDs, ECR URL, CI role ARN, Session Manager command
 ansible/
@@ -90,16 +93,28 @@ ansible/
 docs/                         Project site (Jekyll): design notes, runbook, screenshots
 ```
 
-## Quick start
+## Bringing it up
 
-The full runbook is on the [project site](https://lexxick.github.io/final-project-example/). In short:
+Three layers, each a prerequisite of the next. The full runbook is on the
+[project site](https://lexxick.github.io/final-project-example/).
 
-1. Push the repository and set the Pages source to *GitHub Actions*.
-2. Create the state bucket, then `terraform apply` from `terraform/`.
-3. Add the `AWS_ROLE_ARN` repository variable from the `github_actions_role_arn` output.
-4. Configure Cloudflare (proxied `web` A record, tunnel for `monitoring`) and put the two
-   Parameter Store secrets.
-5. From the controller run `playbooks/docker.yml`, dispatch *Build and deploy*, then `site.yml`.
+| Step | What | Why first |
+| --- | --- | --- |
+| 1 | Push the repository, set the Pages source to *GitHub Actions* | the controller clones `main` at boot |
+| 2 | Create the state bucket (`aws s3api`, three commands) | Terraform needs somewhere to keep state |
+| 3 | `terraform -chdir=terraform/bootstrap apply` | the ECR repository, with its own state; never destroyed with the stack |
+| 4 | `docker build` + `docker push` the first image | the controller deploys `latest` at boot; CI pushes every later one |
+| 5 | Create the Cloudflare tunnel, put the two Parameter Store secrets | `monitoring.yml` reads them at boot |
+| 6 | `terraform -chdir=terraform apply` | the stack; the controller then runs `site.yml` unattended (about ten minutes) |
+| 7 | Add the proxied `web` A record and the `AWS_ROLE_ARN` repository variable from the outputs | HTTPS for the site; CI can assume the role |
+
+After step 6 nothing is run by hand: `site.yml` waits for the other two instances to register with
+Systems Manager, installs Docker, deploys the ship from ECR and starts the monitoring stack. A
+second `site.yml` from the controller reports `changed=0`. Later changes flow through CI: a push to
+`app/` builds, pushes and deploys; a pull request touching `terraform/` gets a plan comment.
+
+Tearing down is `terraform -chdir=terraform destroy`; steps 2–5 stay, so the next `apply` brings
+everything back with the last image, and the same tunnel and secrets.
 
 Verify with `curl -I` on the web server, the Grafana login, `localhost:9090/api/v1/targets` on the
 monitoring server, and a pull request that edits a `.tf` file to see the plan comment.

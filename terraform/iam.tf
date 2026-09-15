@@ -38,7 +38,7 @@ module "web_role" {
         "ecr:GetDownloadUrlForLayer",
         "ecr:BatchCheckLayerAvailability",
       ]
-      resources = [module.ecr.repository_arn]
+      resources = [data.aws_ecr_repository.app.arn]
     }
   }
 }
@@ -146,7 +146,7 @@ module "github_actions_role" {
         "ecr:PutImage",
         "ecr:UploadLayerPart",
       ]
-      resources = [module.ecr.repository_arn]
+      resources = [data.aws_ecr_repository.app.arn]
     }
     DeployCommand = {
       actions   = ["ssm:SendCommand"]
